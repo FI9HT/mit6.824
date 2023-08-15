@@ -106,101 +106,10 @@ func CallFetchTask(mapf func(string, string) []KeyValue,
 	return 0
 }
 
-// 原始版本 速度慢
-//func processMapTask(mapTaskSeq int, fileName string,
-//	mapf func(string, string) []KeyValue) []string {
-//
-//	fmt.Printf("开始处理map任务 [%d]\n", mapTaskSeq)
-//	startTime := time.Now()
-//
-//	file, err := os.Open(fileName)
-//	if err != nil {
-//		fmt.Println("os.Open error")
-//	}
-//	content, err := io.ReadAll(file)
-//	if err != nil {
-//		fmt.Println("io.ReadAll error")
-//	}
-//	err = file.Close()
-//	if err != nil {
-//		fmt.Println("file close error")
-//	}
-//	// 获取文件的所有词语kv
-//	kva := mapf(fileName, string(content))
-//
-//	type FileEncode struct {
-//		file    *os.File
-//		encoder *json.Encoder
-//	}
-//
-//	// K: 生成的文件名，V:FileEncode
-//	//reduceFilesMap := make(map[string]FileEncode)
-//
-//	// 先把所有需要写入的文件统一open，然后统一close，而不是每个单词都打开一次文件，速度会很慢
-//
-//	var mrfileName string
-//
-//	//for _, kv := range kva {
-//	//	reduceN := ihash(kv.Key) % 10 // nReduce
-//	//	mrfileName = fmt.Sprintf("mr-%d-%d", mapTaskSeq, reduceN)
-//	//	if reduceFilesMap[mrfileName].file == nil {
-//	//		// 打开新文件名
-//	//		file, err := os.OpenFile(mrfileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-//	//		if err != nil {
-//	//			fmt.Println("open file error")
-//	//		}
-//	//		enc := json.NewEncoder(file)
-//	//		reduceFilesMap[mrfileName] = FileEncode{file, enc}
-//	//	}
-//	//}
-//	reduceFilesMap := make(map[string]bool)
-//
-//	for _, kv := range kva {
-//		reduceN := ihash(kv.Key) % 10 // nReduce
-//		mrfileName = fmt.Sprintf("mr-%d-%d", mapTaskSeq, reduceN)
-//		file, err := os.OpenFile(mrfileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-//		enc := json.NewEncoder(file)
-//		err = enc.Encode(kv)
-//		//err = reduceFilesMap[mrfileName].encoder.Encode(kv)
-//
-//		if err != nil {
-//			fmt.Println("enc.Encode KV ", kv, " error")
-//		}
-//		err = file.Close()
-//		if err != nil {
-//			fmt.Println("file close error")
-//		}
-//		if reduceFilesMap[mrfileName] == false {
-//			reduceFilesMap[mrfileName] = true
-//		}
-//	}
-//	//for k, v := range reduceFilesMap {
-//	//	err = v.file.Close()
-//	//	if err != nil {
-//	//		fmt.Printf("Close file[%d] error\n", k)
-//	//	}
-//	//}
-//
-//	//fmt.Println("processMapTask finish file: ", mrfileName)
-//	//time.Sleep(10 * time.Second)
-//
-//	var reduceFiles []string
-//	for k, _ := range reduceFilesMap {
-//		reduceFiles = append(reduceFiles, k)
-//	}
-//
-//	endTime := time.Now()
-//	duration := endTime.Sub(startTime).Seconds()
-//	fmt.Printf("map任务[%d]处理完成，用时[%v]s\n", mapTaskSeq, duration)
-//
-//	return reduceFiles
-//}
-
 func processMapTask(mapTaskSeq int, fileName string,
 	mapf func(string, string) []KeyValue) []string {
 
 	//fmt.Printf("开始处理map任务 [%d]\n", mapTaskSeq)
-	//startTime := time.Now()
 
 	file, err := os.Open(fileName)
 	if err != nil {
@@ -265,101 +174,11 @@ func processMapTask(mapTaskSeq int, fileName string,
 		reduceFiles = append(reduceFiles, k)
 	}
 
-	//endTime := time.Now()
-	//duration := endTime.Sub(startTime).Seconds()
-	//fmt.Printf("map任务[%d]处理完成，用时[%v]s\n", mapTaskSeq, duration)
-
 	return reduceFiles
 }
 
-//func decodeJsonFile(file string, kva *[]KV) {
-//	openFile, err := os.OpenFile(file, os.O_RDONLY, 0644)
-//	if err != nil {
-//		fmt.Println("os.OpenFile error")
-//	}
-//	dec := json.NewDecoder(openFile)
-//	for {
-//		var kv KV
-//		if err := dec.Decode(&kv); err != nil {
-//			break
-//		}
-//		kva = append(kva, kv)
-//	}
-//	err = openFile.Close()
-//	if err != nil {
-//		fmt.Println("openFile close error")
-//	}
-//}
-
-// 原始版本，速度慢
-//func processReduceTask(reduceTaskSeq int, files []string,
-//	reducef func(string, []string) string) {
-//
-//	fmt.Printf("开始处理reduce任务 [%d]\n", reduceTaskSeq)
-//	startTime := time.Now()
-//
-//	// 读取所有文件的kv
-//	kva := []KV{}
-//	for _, file := range files {
-//		openFile, err := os.OpenFile(file, os.O_RDONLY, 0644)
-//		if err != nil {
-//			fmt.Println("os.OpenFile error")
-//		}
-//		dec := json.NewDecoder(openFile)
-//		for {
-//			var kv KV
-//			if err := dec.Decode(&kv); err != nil {
-//				break
-//			}
-//			kva = append(kva, kv)
-//		}
-//		err = openFile.Close()
-//		if err != nil {
-//			fmt.Println("openFile close error")
-//		}
-//	}
-//
-//	endTime1 := time.Now()
-//	duration := endTime1.Sub(startTime).Seconds()
-//	fmt.Printf("reduce任务[%d]处理1/3，用时[%v]s\n", reduceTaskSeq, duration)
-//
-//	sort.Sort(ByKey(kva))
-//	outputFileName := fmt.Sprintf("mr-out-%d", reduceTaskSeq)
-//	openOutputFile, _ := os.Create(outputFileName)
-//
-//	endTime2 := time.Now()
-//	duration = endTime2.Sub(endTime1).Seconds()
-//	fmt.Printf("reduce任务[%d]处理2/3，用时[%v]s\n", reduceTaskSeq, duration)
-//
-//	i := 0
-//	for i < len(kva) {
-//		j := i + 1
-//		for j < len(kva) && kva[j].Key == kva[i].Key {
-//			j++
-//		}
-//		values := []string{}
-//		for k := i; k < j; k++ {
-//			values = append(values, kva[k].Value)
-//		}
-//		output := reducef(kva[i].Key, values)
-//
-//		// this is the correct format for each line of Reduce output.
-//		fmt.Fprintf(openOutputFile, "%v %v\n", kva[i].Key, output)
-//
-//		i = j
-//	}
-//	endTime3 := time.Now()
-//	duration = endTime3.Sub(endTime2).Seconds()
-//	fmt.Printf("reduce任务[%d]处理3/3，用时[%v]s\n", reduceTaskSeq, duration)
-//
-//	openOutputFile.Close()
-//}
-
 func processReduceTask(reduceTaskSeq int, files []string,
 	reducef func(string, []string) string) {
-
-	//fmt.Printf("开始处理reduce任务 [%d]\n", reduceTaskSeq)
-	//startTime := time.Now()
 
 	// 读取所有文件的kv
 	kva := []KV{}
@@ -382,18 +201,9 @@ func processReduceTask(reduceTaskSeq int, files []string,
 		}
 	}
 
-	//endTime1 := time.Now()
-	//duration := endTime1.Sub(startTime).Seconds()
-	//fmt.Printf("reduce任务[%d]处理1/3，用时[%v]s\n", reduceTaskSeq, duration)
-
 	sort.Sort(ByKey(kva))
 	outputFileName := fmt.Sprintf("mr-out-%d", reduceTaskSeq)
-	// openOutputFile, _ := os.Create(outputFileName)
 	openOutputFile, _ := os.CreateTemp("./", outputFileName+"_tmp_*")
-
-	//endTime2 := time.Now()
-	//duration = endTime2.Sub(endTime1).Seconds()
-	//fmt.Printf("reduce任务[%d]处理2/3，用时[%v]s\n", reduceTaskSeq, duration)
 
 	i := 0
 	for i < len(kva) {
@@ -412,9 +222,6 @@ func processReduceTask(reduceTaskSeq int, files []string,
 
 		i = j
 	}
-	//endTime3 := time.Now()
-	//duration = endTime3.Sub(endTime2).Seconds()
-	//fmt.Printf("reduce任务[%d]处理3/3，用时[%v]s\n", reduceTaskSeq, duration)
 
 	err := openOutputFile.Close()
 	if err != nil {
