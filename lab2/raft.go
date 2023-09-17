@@ -267,8 +267,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	logger.Debugf("server [%d][%d] => recv AppendEntries from [%d][%d] args.PreLogIndex[%d] leaderCommitId [%d] lastLogIndex[%d]\n",
-		rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PreLogIndex, args.LeaderCommit, args.LastLogIndex)
+	//logger.Debugf("server [%d][%d] => recv AppendEntries from [%d][%d] args.PreLogIndex[%d] leaderCommitId [%d] lastLogIndex[%d]\n",
+	//	rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PreLogIndex, args.LeaderCommit, args.LastLogIndex)
 
 	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
@@ -439,7 +439,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		isLeader = false
 		rf.mu.Unlock()
 	}
-	logger.Debugf("======== RET COMMAND-> server[%d] isLeader[%t] log index[%d] term[%d] ========\n", rf.me, isLeader, index, term)
+	logger.Debugf("====================== RET COMMAND-> server[%d] isLeader[%t] logIndex[%d] term[%d] "+
+		"=====================\n", rf.me, isLeader, index, term)
 	return index, term, isLeader
 }
 
@@ -493,6 +494,7 @@ func (rf *Raft) syncSingleLogStatusToPeer(serverIndex int, lastLogIndex int) boo
 					//rf.mu.Lock()
 					args.PreLogTerm = rf.log[args.PreLogIndex].Term
 					args.Entries = rf.log[args.PreLogIndex+1 : lastLogIndex+1]
+					args.LeaderCommit = rf.commitIndex
 					rf.mu.Unlock()
 				}
 			} else {
@@ -558,7 +560,7 @@ func (rf *Raft) syncAllLogStatusToPeers(lastLogIndex int) bool {
 
 		}
 		if syncLogStatusNum > majority {
-			logger.Debugf("leader[%d] syncLogStatusToPeers majority success\n", rf.me)
+			logger.Debugf("leader[%d] syncLogStatusToPeers majority success.lastLogIndex[%d]\n", rf.me, lastLogIndex)
 			return true
 		}
 	}
@@ -670,7 +672,7 @@ func (rf *Raft) election() {
 
 	rf.mu.Lock()
 	rf.currentTerm++
-	logger.Infof("server[%d] start election. term[%d]\n", rf.me, rf.currentTerm)
+	logger.Infof("server[%d] start election. term[%d] logLen[%d]\n", rf.me, rf.currentTerm, len(rf.log))
 
 	args := RequestVoteArgs{
 		rf.currentTerm,
