@@ -40,7 +40,7 @@ var (
 func makeLogger() *logrus.Logger {
 	once.Do(func() {
 		logger = logrus.New()
-		logger.SetLevel(logrus.DebugLevel)
+		logger.SetLevel(logrus.ErrorLevel)
 		logger.SetOutput(os.Stdout)
 		logger.SetReportCaller(true)
 		logrus.SetFormatter(&logrus.JSONFormatter{})
@@ -727,9 +727,9 @@ func (rf *Raft) election() {
 		logger.Infof("server[%d] election failed\n", rf.me)
 		return
 	} else {
-		logger.Infof("================  server[%d][%v] election success ================\n", rf.me, rf.currentTerm)
 		// initial nextIndex and matchIndex
 		rf.mu.Lock()
+		logger.Infof("================  server[%d][%v] election success ================\n", rf.me, rf.currentTerm)
 		for i, _ := range rf.nextIndex {
 			rf.nextIndex[i] = len(rf.log)
 			if i == rf.me {
@@ -837,6 +837,7 @@ func (rf *Raft) keepSendHeartbeat() {
 	heartbeatFailedTimes := 0
 	reachFailedTimesToExit := 3
 	var serverHeartbeatFailedTimes []int
+	serverHeartbeatFailedTimesMu := sync.Mutex{}
 	for _, _ = range rf.peers {
 		serverHeartbeatFailedTimes = append(serverHeartbeatFailedTimes, 0)
 	}
@@ -891,6 +892,7 @@ func (rf *Raft) keepSendHeartbeat() {
 						} else {
 							// log replication error
 							rf.mu.Unlock()
+							serverHeartbeatFailedTimesMu.Lock()
 							if serverHeartbeatFailedTimes[serverIndex] > 1 {
 								// first failed, maybe because of client request. And is replicating new log.
 								rf.mu.Lock()
@@ -905,11 +907,14 @@ func (rf *Raft) keepSendHeartbeat() {
 								}()
 							}
 							serverHeartbeatFailedTimes[serverIndex]++
+							serverHeartbeatFailedTimesMu.Unlock()
 							appendEntriesCh <- false
 						}
 					} else {
 						// success
+						serverHeartbeatFailedTimesMu.Lock()
 						serverHeartbeatFailedTimes[serverIndex] = 0
+						serverHeartbeatFailedTimesMu.Unlock()
 						appendEntriesCh <- true
 					}
 				} else {
