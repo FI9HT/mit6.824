@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"math/rand"
@@ -144,6 +146,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
@@ -164,6 +174,22 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var term int
+	var votedFor int
+	var log []LogEntry
+
+	if d.Decode(&term) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+		logger.Errorf("Decode error\n")
+	} else {
+		//logger.Debugf("Decode => term %v votedFor %v loglen %v \n", term, votedFor, len(log))
+		rf.mu.Lock()
+		rf.currentTerm = term
+		rf.votedFor = votedFor
+		rf.log = log
+		rf.mu.Unlock()
+	}
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -251,6 +277,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.hasReceivedHeartbeat = true // if a server vote for a candidate, there is an available leader
 			reply.VoteGranted = true
 			reply.Term = rf.currentTerm
+			rf.persist()
 			logger.Debugf("server [%d] vote for [%d]\n", rf.me, args.CandidateId)
 			return
 		}
@@ -328,6 +355,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		reply.Success = false
 	}
+
+	rf.persist()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -411,6 +440,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		term = rf.currentTerm
 		isLeader = false
 	}
+	rf.persist()
 	rf.mu.Unlock()
 
 	return index, term, isLeader
@@ -467,6 +497,7 @@ func (rf *Raft) syncSingleLogStatusToPeer(serverIndex int, lastLogIndex int) boo
 						rf.me, rf.currentTerm, reply.Term, serverIndex)
 					rf.isLeader = false
 					rf.currentTerm = reply.Term
+					rf.persist()
 					rf.mu.Unlock()
 					break
 				} else {
@@ -645,6 +676,7 @@ func (rf *Raft) election() {
 
 	rf.mu.Lock()
 	rf.currentTerm++
+	rf.votedFor = rf.me
 	lastLogIndex := len(rf.log) - 1
 	logger.Infof("Server[%d] start election. term[%d] lastLogIndex[%d]\n", rf.me, rf.currentTerm, lastLogIndex)
 
@@ -656,6 +688,7 @@ func (rf *Raft) election() {
 	}
 	majority := len(rf.peers) / 2
 	rf.hasReceivedHeartbeat = false
+	rf.persist()
 	rf.mu.Unlock()
 
 	voteCh := make(chan bool)
@@ -745,7 +778,8 @@ func (rf *Raft) election() {
 				msg.Command = rf.log[begin].Command
 				rf.applych <- msg
 			}
-			logger.Debugf("leader[%d][%d] syncLog success after election\n", rf.me, rf.currentTerm)
+			logger.Debugf("leader[%d][%d] syncLog success after election. commitId [%v]\n",
+				rf.me, rf.currentTerm, rf.commitIndex)
 			rf.mu.Unlock()
 		}
 
@@ -880,6 +914,7 @@ func (rf *Raft) keepSendHeartbeat() {
 							logger.Debugf("[sendAppendEntries] leader[%d][%d]. follower[%d][%d] "+
 								"has higher term, leader give up.\n",
 								rf.me, rf.currentTerm, serverIndex, reply.Term)
+							rf.persist()
 							rf.mu.Unlock()
 							appendEntriesCh <- false
 							return
@@ -1015,7 +1050,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	logger.Infof("server [%v][%v] running...\n", rf.me, rf.currentTerm)
+	logger.Debugf("server %v after readPersist term %v votedFor %v lenLog %v running...\n",
+		rf.me, rf.currentTerm, rf.votedFor, len(rf.log))
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
