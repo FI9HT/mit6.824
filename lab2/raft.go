@@ -44,7 +44,7 @@ var (
 const leaderHeartbeatInterval = 150
 const leaderElectionTimeoutBase = 300
 const leaderElectionTimeoutRange = 300
-const leaderStopKeepSyncLog = 2
+const leaderStopKeepSyncLog = 1
 const leaderStopKeepHeartbeat = 1
 
 func makeLogger() *logrus.Logger {
@@ -631,42 +631,50 @@ func (rf *Raft) syncAllLogStatusToPeers(lastLogIndex int) bool {
 		}()
 	}
 
-	go func() {
-		wg.Wait()
-		close(syncResultChan)
-	}()
-
 	syncLogStatusNum := 1
 	majority := len(rf.peers) / 2
+	syncMajorityResultCh := make(chan bool, 1000)
+	wg.Add(1)
 
-	for i, _ := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-
+	go func() {
+		defer wg.Done()
 		rf.mu.Lock()
-		if !rf.isLeader {
-			rf.mu.Unlock()
-			return false
-		}
-
+		waitTimes := len(rf.peers)
 		rf.mu.Unlock()
-		select {
-		case result := <-syncResultChan:
+
+		for i := 0; i < waitTimes-1; i++ {
+			result := <-syncResultChan
 			if result {
 				syncLogStatusNum++
 				if syncLogStatusNum > majority {
 					//rf.mu.Lock()
 					//logger.Debugf("leader[%v][%v] syncMajority success.lastLogIndex[%d]\n\n", rf.me, rf.currentTerm, lastLogIndex)
 					//rf.mu.Unlock()
-					return true
+					syncMajorityResultCh <- true
+					break
 				}
 			}
-		case <-time.After(time.Duration(500) * time.Millisecond):
-
 		}
+		syncMajorityResultCh <- false
+	}()
+
+	go func() {
+		wg.Wait()
+		close(syncMajorityResultCh)
+	}()
+
+	select {
+	case ret := <-syncMajorityResultCh:
+		if ret {
+			logger.Debugf("leader[%v][%v] syncMajority success !!! .lastLogIndex[%d]\n\n", rf.me, rf.currentTerm, lastLogIndex)
+			return true
+		} else {
+			return false
+		}
+	case <-time.After(time.Millisecond * time.Duration(800)):
+		logger.Warnf("leader[%d][%v] syncMajority fail\n\n", rf.me, rf.currentTerm)
 	}
-	logger.Warnf("leader[%d][%v] syncMajority fail\n\n", rf.me, rf.currentTerm)
+
 	return false
 }
 
@@ -716,7 +724,7 @@ func (rf *Raft) sendRequestVoteTimeOut(serverIndex int, args *RequestVoteArgs, r
 		//	rf.me, rf.currentTerm, serverIndex, sendResult, sendResult, reply.Term, reply.VoteGranted)
 		//rf.mu.Unlock()
 		return !sendResult
-	case <-time.After(time.Millisecond * time.Duration(500)):
+	case <-time.After(time.Millisecond * time.Duration(800)):
 		//rf.mu.Lock()
 		//logger.Debugf("server [%v][%v][%v] sendRequestVoteTimeOut to server [%v], but timeout\n\n",
 		//	rf.me, rf.currentTerm, rf.votedFor, serverIndex)
@@ -755,7 +763,7 @@ func (rf *Raft) sendAppendEntriesTimeOut(serverIndex int, args *AppendEntriesArg
 		//	rf.me, rf.currentTerm, serverIndex, sendResult, reply)
 		rf.mu.Unlock()
 		return !sendResult
-	case <-time.After(time.Millisecond * time.Duration(500)):
+	case <-time.After(time.Millisecond * time.Duration(800)):
 		//logger.Debugf("server[%v][%v] sendAppendEntries to server[%v] timeout\n\n",
 		//	rf.me, rf.currentTerm, serverIndex)
 	}
@@ -858,7 +866,7 @@ func (rf *Raft) election() {
 					break
 				}
 			}
-		case <-time.After(time.Duration(500) * time.Millisecond):
+		case <-time.After(time.Duration(800) * time.Millisecond):
 		}
 
 		rf.mu.Lock()
@@ -1115,43 +1123,56 @@ func (rf *Raft) keepSendHeartbeat() {
 		go func() {
 
 			heartbeatSuccessNum := 1 // already has self heartbeat
-			successFlag := false
+			heartbeatResultCh := make(chan bool, 1000)
+			heartbeatResultWg := sync.WaitGroup{}
+			heartbeatResultWg.Add(1)
 
-			for i, _ := range rf.peers {
-				if i == rf.me {
-					continue
-				}
-				select {
-				case sendResult := <-appendEntriesCh:
+			go func() {
+				defer heartbeatResultWg.Done()
+				waitTimes := len(rf.peers) - 1
+				for i := 0; i < waitTimes; i++ {
+					sendResult := <-appendEntriesCh
 					if sendResult {
 						heartbeatSuccessNum++
 						if heartbeatSuccessNum > majority {
-							successFlag = true
-							break
+							heartbeatResultCh <- true
+							logger.Debugf("leader[%d][%d] wait heartbeat success\n\n", rf.me, rf.currentTerm)
+							return
 						}
 					}
-				case <-time.After(time.Duration(500) * time.Millisecond):
 				}
-				if successFlag {
+				heartbeatResultCh <- false
+				logger.Debugf("leader[%d][%d] wait heartbeat failed \n\n", rf.me, rf.currentTerm)
+			}()
+
+			go func() {
+				heartbeatResultWg.Wait()
+				close(heartbeatResultCh)
+			}()
+
+			select {
+			case ret := <-heartbeatResultCh:
+				if ret {
+					//logger.Debugf("leader[%d][%d] heartbeat success !!!\n\n", rf.me, rf.currentTerm)
 					return
 				}
+			case <-time.After(time.Millisecond * time.Duration(800)):
+
 			}
 
-			if !successFlag {
+			rf.mu.Lock()
+			heartbeatFailedTimes++
+			failedTimes := heartbeatFailedTimes
+			logger.Debugf("leader[%d][%d] heartbeat failed. times[%d]\n\n", rf.me, rf.currentTerm, heartbeatFailedTimes)
+			rf.mu.Unlock()
+
+			if failedTimes >= leaderStopKeepHeartbeat {
 				rf.mu.Lock()
-				heartbeatFailedTimes++
-				failedTimes := heartbeatFailedTimes
-				logger.Debugf("leader[%d][%d] heartbeat failed. times[%d]\n\n", rf.me, rf.currentTerm, heartbeatFailedTimes)
+				rf.isLeader = false
+				logger.Debugf("leader[%d][%d] give up leadership, exit heartbeat\n\n", rf.me, rf.currentTerm)
 				rf.mu.Unlock()
-
-				if failedTimes >= leaderStopKeepHeartbeat {
-					rf.mu.Lock()
-					rf.isLeader = false
-					logger.Debugf("leader[%d][%d] give up leadership, exit heartbeat\n\n", rf.me, rf.currentTerm)
-					rf.mu.Unlock()
-					return
-				}
 			}
+
 		}()
 
 		// check matchIndex and update commitIndex
