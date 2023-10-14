@@ -123,7 +123,8 @@ type Raft struct {
 	cond         *sync.Cond
 
 	// channel
-	applych chan ApplyMsg
+	applych        chan ApplyMsg
+	notifyCommitCh chan bool
 }
 
 // return currentTerm and whether this server
@@ -499,7 +500,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// update applyId
 				rf.lastApplied = rf.commitIndex
 				logger.Infof("server[%v][%v] in AE update commitIndex = %v", rf.me, rf.currentTerm, rf.commitIndex)
-				rf.cond.Signal()
+				if !rf.killed() {
+					rf.notifyCommitCh <- true
+				}
 			}
 			reply.Success = true
 		}
@@ -537,7 +540,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			if rf.commitIndex < args.LastIncludedIndex {
 				rf.commitIndex = args.LastIncludedIndex
 				rf.lastApplied = rf.commitIndex
-				rf.cond.Signal()
+				if !rf.killed() {
+					rf.notifyCommitCh <- true
+				}
 			}
 		}
 	}
@@ -897,7 +902,7 @@ func (rf *Raft) syncLogToAllPeers(lastLogIndex int) bool {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
-
+	close(rf.notifyCommitCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -1046,7 +1051,9 @@ func (rf *Raft) handleClientRequest(lastLogIndex int) {
 		if rf.commitIndex < lastLogIndex {
 			rf.commitIndex = lastLogIndex
 			rf.lastApplied = rf.commitIndex
-			rf.cond.Signal()
+			if !rf.killed() {
+				rf.notifyCommitCh <- true
+			}
 			logger.Debugf("leader[%v][%v] syncAllLog [%v] success, update commitIndex[%v]",
 				rf.me, rf.currentTerm, lastLogIndex, rf.commitIndex)
 		}
@@ -1160,11 +1167,12 @@ func (rf *Raft) sendCommittedLogToApplyChLoop() {
 
 	for !rf.killed() {
 
+		//rf.cond.Wait()
+		<-rf.notifyCommitCh
+
 		rf.mu.Lock()
-		rf.cond.Wait()
 
 		commitIndex := rf.commitIndex
-
 		var msgs []ApplyMsg
 
 		for index := lastCommittedLogIndex; index <= commitIndex; {
@@ -1175,6 +1183,7 @@ func (rf *Raft) sendCommittedLogToApplyChLoop() {
 				msg.CommandIndex = index
 				msg.CommandValid = true
 				msg.Command = rf.log[index].Command
+				//logger.Debugf("s %v cm log append %v", rf.me, index)
 				index++
 			} else {
 				msg.CommandValid = false
@@ -1184,7 +1193,6 @@ func (rf *Raft) sendCommittedLogToApplyChLoop() {
 				msg.Snapshot = rf.persister.ReadSnapshot()
 				index = rf.snapshotLastIncludedIndex + 1
 			}
-
 			msgs = append(msgs, msg)
 		}
 		lastCommittedLogIndex = commitIndex + 1
@@ -1192,6 +1200,9 @@ func (rf *Raft) sendCommittedLogToApplyChLoop() {
 		rf.mu.Unlock()
 
 		for _, j := range msgs {
+			rf.mu.Lock()
+			logger.Debugf("s %v apply %v", rf.me, j.CommandIndex)
+			rf.mu.Unlock()
 			rf.applych <- j
 		}
 
@@ -1227,8 +1238,11 @@ func (rf *Raft) checkMatchIndexToUpdateCommitIndex() {
 	if matchIndex != -1 && rf.state == Leader {
 		rf.commitIndex = matchIndex
 		rf.lastApplied = rf.commitIndex
-		rf.cond.Signal()
+		if !rf.killed() {
+			rf.notifyCommitCh <- true
+		}
 	}
+
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -1316,6 +1330,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 	rf.applych = applyCh
+	rf.notifyCommitCh = make(chan bool, 1000)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(rf.persister.ReadRaftState())
