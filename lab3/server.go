@@ -4,10 +4,10 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"encoding/json"
 	"log"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 const Debug = true
@@ -29,6 +29,11 @@ type Op struct {
 	CmdId     string
 }
 
+type SnapshotData struct {
+	Data   map[string]string
+	CmdIds []string
+}
+
 type KVServer struct {
 	mu      sync.Mutex
 	me      int
@@ -44,6 +49,7 @@ type KVServer struct {
 	commitIndex    int
 	cond           *sync.Cond
 	leaderTerm     int
+	persister      *raft.Persister
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -197,7 +203,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
-
+	//close(kv.applyCh)
 	DPrintf("kvS %v has been killed\n", kv.me)
 }
 
@@ -223,10 +229,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
 
-	//ss := make([]int, 3, 10)
-	//
-	//time.Sleep(time.Second * time.Duration(11))
-
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
@@ -242,19 +244,42 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.leaderTerm = 0
 	kv.cond = sync.NewCond(&kv.mu)
 	kv.cmdIdsFromRaft = make([]string, 20)
+	kv.persister = persister
+
+	if kv.persister.RaftStateSize() != 0 {
+		DPrintf("kvs %v raft state size is not 0, read to recover", kv.me)
+
+		snapshotData := SnapshotData{}
+		err := json.Unmarshal(kv.persister.ReadSnapshot(), &snapshotData)
+
+		//DPrintf("kvs %v len(snapshotData)=%v", kv.me, len(snapshotData))
+
+		if err != nil {
+			DPrintf("JSON Unmarshal error")
+		} else {
+			kv.eraseAndCopyData(snapshotData.Data, snapshotData.CmdIds)
+		}
+
+		for i, j := range kv.data {
+			DPrintf("kvs %v recover data key %v value %v", kv.me, i, j)
+		}
+	}
 
 	go func() {
 		kv.readApplyChLoop()
 	}()
 
-	go func() {
-		for {
-			kv.mu.Lock()
-			DPrintf("==============kvs %v commit index %v================", kv.me, kv.commitIndex)
-			kv.mu.Unlock()
-			time.Sleep(time.Second * time.Duration(2))
-		}
-	}()
+	//go func() {
+	//	for !kv.killed() {
+	//		kv.mu.Lock()
+	//		DPrintf("==============kvs %v commit index %v================", kv.me, kv.commitIndex)
+	//		for i, j := range kv.data {
+	//			DPrintf("kvs %v CHECK key %v value %v", kv.me, i, j)
+	//		}
+	//		kv.mu.Unlock()
+	//		time.Sleep(time.Second * time.Duration(1))
+	//	}
+	//}()
 
 	DPrintf("KVS %v start", kv.me)
 
@@ -264,8 +289,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 // read from applyCh
 func (kv *KVServer) readApplyChLoop() {
 
+	DPrintf("kvs %v readapplyloop start...", kv.me)
+
 	for !kv.killed() {
 		msg := <-kv.applyCh
+		DPrintf("KVS %v recv index %v", kv.me, msg.CommandIndex)
 
 		kv.mu.Lock()
 		if msg.CommandValid {
@@ -283,15 +311,27 @@ func (kv *KVServer) readApplyChLoop() {
 			// apply, should avoid replicated op
 			if !kv.findCmdId(op.CmdId, &kv.cmdIdsFromRaft) {
 				kv.applyCmd(op)
+				kv.checkWhetherNeedSnapshot(msg.CommandIndex)
 			} else {
 				DPrintf("cmdID %v already exist", op.CmdId)
 			}
 			// broadcast to notify every RPC
 			kv.cond.Broadcast()
 		} else {
-			DPrintf("WARING! msg commitIndex is invalid index %v", msg.CommandIndex)
-			kv.leaderTerm = 0 // indicate that leader change, and the RPC which is waiting for reply could return ERR LEADER right now
-			kv.cond.Broadcast()
+			//DPrintf("WARING! msg commitIndex is invalid index %v", msg.CommandIndex)
+			if msg.SnapshotIndex != 0 {
+				snapshotData := SnapshotData{}
+				err := json.Unmarshal(kv.persister.ReadSnapshot(), &snapshotData)
+				kv.commitIndex = msg.SnapshotIndex
+				if err != nil {
+					DPrintf("JSON Unmarshal error")
+				} else {
+					kv.eraseAndCopyData(snapshotData.Data, snapshotData.CmdIds)
+				}
+			} else {
+				kv.leaderTerm = 0 // indicate that leader change, and the RPC which is waiting for reply could return ERR LEADER right now
+				kv.cond.Broadcast()
+			}
 		}
 
 		kv.mu.Unlock()
@@ -329,4 +369,53 @@ func (kv *KVServer) findCmdId(cmd string, cmdIds *[]string) bool {
 		}
 	}
 	return false
+}
+
+// note it's already locked
+func (kv *KVServer) checkWhetherNeedSnapshot(index int) {
+
+	if kv.maxraftstate == -1 {
+		return
+	}
+	if kv.persister.RaftStateSize()+200 > kv.maxraftstate {
+
+		snapshotData := SnapshotData{
+			Data:   kv.data,
+			CmdIds: kv.cmdIdsFromRaft,
+		}
+		snapshot, err := json.Marshal(snapshotData)
+		if err != nil {
+			DPrintf("json Marshal error")
+			return
+		}
+
+		DPrintf("------------kvs %v snapshot(%v), raft state size %v max %v index %v---------------",
+			kv.me, len(snapshot), kv.persister.RaftStateSize(), kv.maxraftstate, index)
+
+		kv.rf.Snapshot(index, snapshot)
+
+	}
+}
+
+func (kv *KVServer) eraseAndCopyData(data map[string]string, cmdIds []string) {
+
+	for k, v := range kv.data {
+		DPrintf("eraseAndCopyData1 kvs %v k %v, v %v", kv.me, k, v)
+	}
+
+	kv.cmdIdsFromRaft = kv.cmdIdsFromRaft[:0]
+	for _, j := range cmdIds {
+		kv.cmdIdsFromRaft = append(kv.cmdIdsFromRaft, j)
+	}
+
+	for key := range kv.data {
+		delete(kv.data, key)
+	}
+	for i, j := range data {
+		kv.data[i] = j
+	}
+
+	for k, v := range kv.data {
+		DPrintf("eraseAndCopyData2 kvs %v k %v, v %v", kv.me, k, v)
+	}
 }

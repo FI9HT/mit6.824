@@ -48,7 +48,7 @@ const Leader = "Leader"
 func makeLogger() *logrus.Logger {
 	once.Do(func() {
 		logger = logrus.New()
-		logger.SetLevel(logrus.ErrorLevel)
+		logger.SetLevel(logrus.DebugLevel)
 		logger.SetOutput(os.Stdout)
 		logger.SetReportCaller(true)
 		logrus.SetFormatter(&logrus.JSONFormatter{})
@@ -893,7 +893,11 @@ func (rf *Raft) syncLogToAllPeers(lastLogIndex int) bool {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
-	close(rf.notifyCommitCh)
+	//logger.Debugf("S %v bofore lock", rf.me)
+	//rf.mu.Lock()
+	//logger.Debugf("S %v after lock", rf.me)
+	//close(rf.notifyCommitCh)
+	//rf.mu.Unlock()
 }
 
 func (rf *Raft) killed() bool {
@@ -1183,7 +1187,7 @@ func (rf *Raft) sendCommittedLogToApplyChLoop() {
 			}
 			lastCommittedLogIndex = commitIndex + 1
 		} else {
-			logger.Infof("leader %v clear cmd end %v", rf.me, flag)
+			logger.Infof("rf %v clear cmd end %v", rf.me, flag)
 
 			for index := rf.commitIndex + 1; index <= flag; index++ {
 				msg := ApplyMsg{}
@@ -1237,7 +1241,6 @@ func (rf *Raft) checkMatchIndexToUpdateCommitIndex() {
 			rf.notifyCommitCh <- 0
 		}
 	}
-
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -1334,7 +1337,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}()
 
 	go func() {
-		for {
+		for !rf.killed() {
 			rf.mu.Lock()
 			logger.Debugf("rf %v isLeader %v commitIndex %v lastLogIndex %v",
 				rf.me, rf.state == Leader, rf.commitIndex, len(rf.log)-1)
@@ -1342,6 +1345,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			time.Sleep(time.Second * time.Duration(1))
 		}
 	}()
+
+	logger.Infof("rf %v running...", rf.me)
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

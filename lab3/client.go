@@ -81,7 +81,7 @@ func (ck *Clerk) Get(key string) string {
 				ck.mu.Unlock()
 				returnValue = reply.Value
 
-				DPrintf("ck %v send GET %+v to kvs %v success and result %v\n", ck.me, args, leaderIndex, returnValue)
+				DPrintf("ck %v send GET %+v to kvs %v success and result %v\n", ck.me, args, leaderIndex, reply.Value)
 
 				break
 
